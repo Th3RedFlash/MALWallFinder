@@ -14,35 +14,10 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
 
 # --- Configuration ---
-# Wallhaven API info is not used in this test version's endpoint
-# WALLHAVEN_API_URL = "https://wallhaven.cc/api/v1/search"
-# WALLHAVEN_API_KEY = os.getenv("WALLHAVEN_API_KEY")
-# WALLPAPER_LIMIT = 5
 MAL_LIST_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}?status=2" # status=2 is 'Completed'
 
 # --- Helper Functions ---
-
-# NOTE: clean_anime_title and group_anime are not used by the simplified endpoint below,
-# but kept here for potential future use / restoration.
-def clean_anime_title(title):
-    text = title.lower()
-    text = re.sub(r'\s(season\s?\d+|s\d+)\b', '', text)
-    text = re.sub(r'\s(part\s?\d+|p\d+)\b', '', text)
-    text = re.sub(r'\s(cour\s?\d+)\b', '', text)
-    text = re.sub(r'\s?:\s?(the movie|movie|ova|ona|special|tv special)\b', '', text)
-    text = re.sub(r'\s\(\d{4}\)$', '', text)
-    text = re.sub(r'\s\(tv\)$', '', text)
-    text = re.sub(r'\s(2nd season|3rd season|4th season|5th season)', '', text)
-    text = re.sub(r'\s[ivx]+$', '', text)
-    text = text.replace(':', ' ').replace('-', ' ')
-    text = ' '.join(text.split())
-    return text.strip()
-
-def group_anime(anime_titles_list):
-    grouped = {}; #... (implementation omitted as not used in test endpoint)
-    return grouped # Placeholder
-
-# --- MAL SCRAPING FUNCTION (Unchanged from previous version) ---
+# Scraper function (ensure it exists and is correct)
 def get_mal_completed_list_from_scrape(username):
     """ Fetches and scrapes the completed anime list directly from MAL website. """
     mal_url = MAL_LIST_URL_TEMPLATE.format(username=username)
@@ -59,7 +34,7 @@ def get_mal_completed_list_from_scrape(username):
             raise ConnectionError(f"Could not fetch MAL page (Status: {response.status_code}). Check username and profile visibility.")
 
         soup = BeautifulSoup(response.text, "html.parser")
-        title_tags = soup.select("td.data.title.clearfix a.link.sort") # Check this selector still works!
+        title_tags = soup.select("td.data.title.clearfix a.link.sort") # CSS Selector from your file [cite: 4]
 
         if not title_tags:
             list_table = soup.select_one("table.list-table")
@@ -92,43 +67,31 @@ def index():
 # --- *** SIMPLIFIED API ENDPOINT FOR TESTING *** ---
 @app.route('/api/wallpapers/<username>')
 def get_anime_wallpapers_test(username):
-    """
-    TEST VERSION: Fetches MAL list via scraper and returns only the raw title list.
-    """
+    """ TEST VERSION: Fetches MAL list via scraper and returns only the raw title list. """
     print(f"[Request] Received TEST API request for username: {username}")
     if not username: return jsonify({"error": "MAL username is required"}), 400
     try:
         print(f"  [Flow-Test] Fetching MAL list via direct scraping for: {username}")
-        # Call the scraping function
-        mal_title_list = get_mal_completed_list_from_scrape(username)
+        mal_title_list = get_mal_completed_list_from_scrape(username) # Call the scraper
 
-        if not mal_title_list:
-             # Handle empty list return from scraper
+        if mal_title_list is None: # Handle potential None return, though it should raise exceptions on error
+             print("  [Result-Test] Scraper returned None unexpectedly.")
+             raise RuntimeError("Scraper failed unexpectedly.")
+        elif not mal_title_list: # Check for empty list specifically
              print("  [Result-Test] Scraper returned no titles.")
-             # Return 404 with a specific message for this case
              return jsonify({"message": f"No completed anime titles found for user '{username}' by scraper (list empty/private or MAL structure changed?)."}), 404
         else:
-             # If titles ARE found, return the list directly
+             # Return the list of titles directly as JSON
              print(f"  [Result-Test] Returning list of {len(mal_title_list)} raw titles.")
-             # Return the list as JSON - the frontend will handle displaying it
-             return jsonify(mal_title_list)
+             return jsonify(mal_title_list) # Returns ["Title 1", "Title 2", ...]
 
-    # Handle specific errors raised from scraping function
-    except ValueError as e: # User not found / private profile from scraper
-        print(f"[Error-Test] ValueError: {e}")
-        return jsonify({"error": str(e)}), 404 # Keep 404 for user not found
-    except ConnectionError as e: # Network error during scraping
-        print(f"[Error-Test] ConnectionError: {e}")
-        return jsonify({"error": str(e)}), 503 # Keep 503 for connection issues
-    except RuntimeError as e: # Internal processing error (e.g., parsing)
-        print(f"[Error-Test] RuntimeError: {e}")
-        return jsonify({"error": str(e)}), 500 # Keep 500 for internal errors
-    # Generic catch-all for anything else
+    except ValueError as e: print(f"[Error-Test] ValueError: {e}"); return jsonify({"error": str(e)}), 404
+    except ConnectionError as e: print(f"[Error-Test] ConnectionError: {e}"); return jsonify({"error": str(e)}), 503
+    except RuntimeError as e: print(f"[Error-Test] RuntimeError: {e}"); return jsonify({"error": str(e)}), 500
     except Exception as e:
         print(f"[Error-Test] An unhandled error occurred in API endpoint: {type(e).__name__} - {e}")
         traceback.print_exc(); return jsonify({"error": "An unexpected internal server error occurred"}), 500
 # --- *** END OF SIMPLIFIED API ENDPOINT *** ---
-
 
 # --- Main Execution ---
 if __name__ == '__main__':
