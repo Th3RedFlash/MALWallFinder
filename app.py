@@ -2,30 +2,30 @@
 import os
 import re
 import requests
-import traceback # Import traceback for better error logging
+import traceback
+from bs4 import BeautifulSoup # Import BeautifulSoup
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment variables (for local .env file testing)
 load_dotenv()
 
-# Ensure template_folder='templates' and static_folder='static' are correctly specified
 app = Flask(__name__, template_folder='templates', static_folder='static')
-
-# --- Initialize CORS ---
 CORS(app)
 
 # --- Configuration ---
-JIKAN_API_USER_URL = "https://api.jikan.moe/v4/users/{username}/animelist"
+# No longer using Jikan URL
 WALLHAVEN_API_URL = "https://wallhaven.cc/api/v1/search"
-WALLHAVEN_API_KEY = os.getenv("WALLHAVEN_API_KEY") # Set in Render Environment Variables
+WALLHAVEN_API_KEY = os.getenv("WALLHAVEN_API_KEY")
 WALLPAPER_LIMIT = 5
+MAL_LIST_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}?status=2" # status=2 is 'Completed'
 
 # --- Helper Functions ---
 
 def clean_anime_title(title):
-    """ Basic cleaning and grouping of anime titles. """
+    """ Basic cleaning of anime titles for grouping/searching. """
+    # This function remains largely the same, but might need tuning
+    # based on how titles appear directly from MAL HTML vs Jikan.
     text = title.lower()
     text = re.sub(r'\s(season\s?\d+|s\d+)\b', '', text)
     text = re.sub(r'\s(part\s?\d+|p\d+)\b', '', text)
@@ -39,78 +39,95 @@ def clean_anime_title(title):
     text = ' '.join(text.split())
     return text.strip()
 
-# --- JIKAN FUNCTION (SFW FILTER REMOVED) ---
-def get_mal_completed_list(username):
-    """ Fetches the completed anime list for a MAL username from Jikan. """
-    # REMOVED 'sfw': 'true' from params
-    params = {'status': 'completed'}
-    request_url = JIKAN_API_USER_URL.format(username=username)
-    print(f"  [Jikan] Requesting URL: {request_url} with params: {params}") # Log exact URL (no SFW)
+# --- NEW MAL SCRAPING FUNCTION (based on user file) ---
+def get_mal_completed_list_from_scrape(username):
+    """
+    Fetches and scrapes the completed anime list directly from MAL website.
+    Returns a list of anime titles.
+    Raises Exceptions on failure.
+    """
+    mal_url = MAL_LIST_URL_TEMPLATE.format(username=username)
+    # Use a realistic User-Agent header
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    print(f"  [Scraper] Requesting URL: {mal_url}")
+
     try:
-        response = requests.get(request_url, params=params, timeout=20)
-        print(f"  [Jikan] Response Status Code: {response.status_code}")
+        response = requests.get(mal_url, headers=headers, timeout=20)
+        print(f"  [Scraper] Response Status Code: {response.status_code}")
 
+        # Check for non-200 status explicitly
         if response.status_code == 404:
-            print(f"  [Jikan] Received 404 for user: {username}. Raising ValueError.")
-            try:
-                error_details = response.json()
-                print(f"  [Jikan] 404 Response Body: {error_details}")
-            except requests.exceptions.JSONDecodeError:
-                print(f"  [Jikan] 404 Response Body: Not valid JSON or empty.")
-            raise ValueError("MAL user not found")
+            print(f"  [Scraper] Received 404 for user: {username}. MAL profile might be private or non-existent.")
+            # Use ValueError consistent with previous Jikan error handling
+            raise ValueError(f"MyAnimeList user '{username}' not found or profile is private.")
+        elif response.status_code != 200:
+            print(f"  [Scraper] Received non-200 status code: {response.status_code}")
+            # Use ConnectionError for other connection/server issues
+            raise ConnectionError(f"Could not fetch MAL page (Status: {response.status_code}). Check username and profile visibility.")
 
-        elif response.status_code == 429:
-             print(f"  [Jikan] Received 429 Too Many Requests. Raising ConnectionError.")
-             raise ConnectionError("Rate limited by Jikan API. Please wait and try again.")
+        # Proceed with parsing if status is 200
+        soup = BeautifulSoup(response.text, "html.parser")
+        # Selector from user's file: 'td.data.title.clearfix a.link.sort'
+        # This selector might need updating if MAL changes its HTML structure!
+        title_tags = soup.select("td.data.title.clearfix a.link.sort")
 
-        response.raise_for_status() # Raise for other non-2xx errors
+        if not title_tags:
+            # Check if the list is potentially hidden or empty - MAL page structure might differ
+            # Looking for signs of a private list or just empty list can be complex
+            print(f"  [Scraper] No anime title elements found using selector. List might be empty, private, or MAL structure changed.")
+            # Return empty list, let the main endpoint handle this
+            return []
 
-        data = response.json().get('data', [])
-        print(f"  [Jikan] Successfully received data ({len(data)} items) for {username}.")
-        return data
+        anime_titles = [tag.get_text(strip=True) for tag in title_tags if tag]
+        print(f"  [Scraper] Found {len(anime_titles)} titles for {username}.")
+        return anime_titles
 
-    except ValueError as e: raise e
-    except ConnectionError as e: raise e
     except requests.exceptions.RequestException as e:
-        print(f"  [Jikan] RequestException occurred: {type(e).__name__} - {e}")
-        response_content = getattr(e.response, 'text', 'No response content available')
-        print(f"  [Jikan] Response content (if any): {response_content[:500]}...")
-        status_code = getattr(e.response, 'status_code', 'N/A')
-        print(f"  [Jikan] Status code (if available): {status_code}")
-        raise ConnectionError(f"Could not connect to Jikan API or API returned an error (Status: {status_code}).")
+        print(f"  [Scraper] RequestException occurred: {type(e).__name__} - {e}")
+        raise ConnectionError(f"Network error fetching MAL page: {e}")
     except Exception as e:
-        print(f"  [Jikan] An unexpected error occurred processing Jikan response: {type(e).__name__} - {e}")
+        # Catch other potential errors (like parsing errors)
+        print(f"  [Scraper] An unexpected error occurred during scraping: {type(e).__name__} - {e}")
         traceback.print_exc()
-        raise RuntimeError("Internal error processing MAL data")
-# --- END OF JIKAN FUNCTION ---
+        raise RuntimeError("Internal error processing MAL page.")
 
-def group_anime(anime_list):
-    """ Groups anime list by cleaned titles. """
+# --- MODIFIED GROUPING FUNCTION (Works with list of titles) ---
+def group_anime(anime_titles_list):
+    """
+    Groups a list of raw anime titles by cleaned titles.
+    Returns a dictionary: { 'grouped_key': {'display_title': title, 'search_term': title} }
+    """
     grouped = {}
-    for item in anime_list:
-        # Now pulls anime title regardless of SFW status from MAL list
-        original_title = item.get('anime', {}).get('title', 'Unknown Title')
-        mal_id = item.get('anime', {}).get('mal_id', None)
-        image_url = item.get('anime', {}).get('images', {}).get('jpg', {}).get('image_url')
-        if not original_title or original_title == 'Unknown Title': continue
-        search_term = original_title
-        grouped_key = clean_anime_title(original_title)
+    for title in anime_titles_list:
+        if not title: continue
+        # Use the original title for display and search initially
+        display_title = title
+        search_term = title
+        # Generate a simpler key for grouping similar seasons/parts
+        grouped_key = clean_anime_title(title)
         if not grouped_key: continue
+
         if grouped_key not in grouped:
-            grouped[grouped_key] = { 'display_title': original_title, 'search_term': search_term, 'mal_ids': set(), 'image_url': image_url }
-        if mal_id: grouped[grouped_key]['mal_ids'].add(mal_id)
-        if len(original_title) < len(grouped[grouped_key]['display_title']):
-             grouped[grouped_key]['display_title'] = original_title
-             grouped[grouped_key]['image_url'] = image_url
+            # Store the first encountered title as the display/search term for the group
+            grouped[grouped_key] = {
+                'display_title': display_title,
+                'search_term': search_term
+                # NOTE: No 'mal_cover' available from this scraping method
+            }
+        else:
+             # Optional: Logic to prefer shorter titles as display title for the group
+             if len(display_title) < len(grouped[grouped_key]['display_title']):
+                  grouped[grouped_key]['display_title'] = display_title
+                  # Decide if search term should also update (maybe prefer shorter?)
+                  # grouped[grouped_key]['search_term'] = display_title
     return grouped
 
+# --- WALLHAVEN FUNCTION (Unchanged) ---
 def get_wallpapers(anime_title):
-    """ Fetches wallpapers for an anime title from Wallhaven. """
-    # NOTE: This function STILL filters Wallhaven results for SFW ('purity': '100')
+    """ Fetches SFW wallpapers for an anime title from Wallhaven. """
     params = { 'q': anime_title, 'categories': '010', 'purity': '100', 'sorting': 'relevance' }
-    headers = {}
+    headers = {}; print(f"    [Wallhaven] Searching for (SFW only): {anime_title}")
     if WALLHAVEN_API_KEY: headers['X-API-Key'] = WALLHAVEN_API_KEY
-    print(f"    [Wallhaven] Searching for (SFW only): {anime_title}") # Clarified SFW
     try:
         response = requests.get(WALLHAVEN_API_URL, params=params, headers=headers, timeout=15)
         print(f"    [Wallhaven] Response Status Code: {response.status_code}")
@@ -120,7 +137,7 @@ def get_wallpapers(anime_title):
         for wall in wallpapers_data[:WALLPAPER_LIMIT]:
             thumb = wall.get('thumbs', {}).get('large'); full_img = wall.get('path')
             if thumb and full_img: results.append({'thumbnail': thumb, 'full': full_img})
-        print(f"    [Wallhaven] Found {len(results)} SFW wallpapers.") # Clarified SFW
+        print(f"    [Wallhaven] Found {len(results)} SFW wallpapers.")
         return results
     except requests.exceptions.RequestException as e:
         print(f"    [Wallhaven] RequestException occurred: {type(e).__name__} - {e}")
@@ -136,48 +153,61 @@ def get_wallpapers(anime_title):
 def index():
     """ Serves the main HTML page. """
     print("[Request] Received request for / route")
-    try:
-        return render_template('index.html')
-    except Exception as e:
-        print(f"[Error] Error rendering template index.html: {type(e).__name__} - {e}")
-        traceback.print_exc(); raise e
+    try: return render_template('index.html')
+    except Exception as e: print(f"[Error] Error rendering template index.html: {type(e).__name__} - {e}"); traceback.print_exc(); raise e
 
+# --- MODIFIED API ENDPOINT ---
 @app.route('/api/wallpapers/<username>')
 def get_anime_wallpapers(username):
-    """ API endpoint to get grouped anime and wallpapers. """
+    """ API endpoint using direct MAL scraping. """
     print(f"[Request] Received API request for username: {username}")
     if not username: return jsonify({"error": "MAL username is required"}), 400
     try:
-        print(f"  [Flow] Fetching MAL list for user: {username} (SFW filter removed)")
-        mal_list = get_mal_completed_list(username) # Call updated function (no SFW filter)
+        print(f"  [Flow] Fetching MAL list via direct scraping for: {username}")
+        # Call the NEW scraping function
+        mal_title_list = get_mal_completed_list_from_scrape(username)
 
-        print(f"  [Flow] Found {len(mal_list)} completed anime entries. Grouping...")
-        grouped_anime = group_anime(mal_list)
+        if not mal_title_list:
+             # Handle empty list return from scraper
+             print("  [Result] Scraper returned no titles. List might be empty or private.")
+             return jsonify({"message": f"No completed anime found for user '{username}', list might be empty or private."}), 404
+
+        print(f"  [Flow] Found {len(mal_title_list)} raw titles. Grouping...")
+        # Call the MODIFIED grouping function
+        grouped_anime = group_anime(mal_title_list)
         print(f"  [Flow] Grouped into {len(grouped_anime)} unique series.")
         if not grouped_anime:
              print("  [Result] No anime could be grouped.")
-             return jsonify({"message": f"Could not group any anime for user '{username}'. Check MAL profile visibility or list content."}), 404
+             return jsonify({"message": f"Could not group any anime for user '{username}'."}), 404 # Should be rare if titles were found
 
         results = {}; print(f"  [Flow] Fetching wallpapers (SFW only) from Wallhaven for {len(grouped_anime)} groups...")
         processed_count = 0; total_groups = len(grouped_anime)
         for key, data in grouped_anime.items():
             processed_count += 1; print(f"  [Flow] ({processed_count}/{total_groups}) Processing group: {key}")
-            wallpapers = get_wallpapers(data['search_term']) # Still fetches SFW wallpapers only
+            wallpapers = get_wallpapers(data['search_term'])
             if wallpapers:
-                 results[key] = { 'display_title': data['display_title'], 'mal_cover': data['image_url'], 'wallpapers': wallpapers }
+                 # NOTE: No 'mal_cover' included in the result anymore
+                 results[key] = { 'display_title': data['display_title'], 'wallpapers': wallpapers }
 
         print("  [Flow] Finished fetching wallpapers.")
         if not results:
              print("  [Result] No SFW wallpapers found for any grouped anime.")
-             # Updated message to reflect SFW filter on Wallhaven part
              return jsonify({"message": "Found completed anime, but no relevant SFW wallpapers could be retrieved from Wallhaven."}), 404
 
         print(f"  [Result] Returning {len(results)} anime groups with SFW wallpapers.")
         return jsonify(results)
 
-    except ValueError as e: print(f"[Error] ValueError: {e}"); return jsonify({"error": str(e)}), 404
-    except ConnectionError as e: print(f"[Error] ConnectionError: {e}"); return jsonify({"error": str(e)}), 503
-    except RuntimeError as e: print(f"[Error] RuntimeError: {e}"); return jsonify({"error": str(e)}), 500
+    # Handle specific errors raised from scraping/helper functions
+    except ValueError as e: # User not found / private profile from scraper
+        print(f"[Error] ValueError: {e}")
+        return jsonify({"error": str(e)}), 404
+    except ConnectionError as e: # Network error during scraping
+        print(f"[Error] ConnectionError: {e}")
+        return jsonify({"error": str(e)}), 503
+    except RuntimeError as e: # Internal processing error (e.g., parsing)
+        print(f"[Error] RuntimeError: {e}")
+        return jsonify({"error": str(e)}), 500
+    # Generic catch-all for anything else
     except Exception as e:
         print(f"[Error] An unhandled error occurred in API endpoint: {type(e).__name__} - {e}")
         traceback.print_exc(); return jsonify({"error": "An unexpected internal server error occurred"}), 500
