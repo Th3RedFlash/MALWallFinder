@@ -18,7 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!username) { displayError("Please enter a MAL username."); usernameInput.focus(); return; }
 
         resultsDiv.innerHTML = ''; errorDiv.style.display = 'none'; infoDiv.style.display = 'none';
-        loadingText.textContent = 'Fetching MAL titles...'; // Updated text
+        loadingText.textContent = 'Fetching MAL titles...';
         loadingDiv.style.display = 'flex';
         fetchButton.disabled = true; usernameInput.disabled = true;
 
@@ -27,37 +27,30 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`Workspaceing TEST data from API: ${apiUrl}`);
             const response = await fetch(apiUrl);
 
-            // Check for non-OK response (e.g., 404 User Not Found, 5xx Server Error)
             if (!response.ok) {
                 let errorMsg = `Error ${response.status}: ${response.statusText}`;
                 let detailedError = '';
-                try {
-                    const errorData = await response.json();
-                    // Use specific 'error' or 'message' field from backend response
-                    detailedError = errorData.error || errorData.message || '';
-                    if (detailedError) { errorMsg = detailedError; } // Use backend message if more specific
-                } catch (jsonError) {
-                     console.warn("Could not parse error response as JSON:", jsonError);
-                     errorMsg += ". Check Render logs for backend errors."; // Add advice
-                }
+                try { const errorData = await response.json(); detailedError = errorData.error || errorData.message || ''; if (detailedError) { errorMsg = detailedError; }
+                } catch (jsonError) { console.warn("Could not parse error response as JSON:", jsonError); errorMsg += ". Check Render logs for backend errors."; }
                 throw new Error(errorMsg);
             }
 
-            // --- Process successful response (EXPECTING AN ARRAY OF STRINGS) ---
             const data = await response.json();
 
-            // Check if the response is actually an array (of titles)
+            // --- EXPECTING AN ARRAY OF STRINGS ---
             if (Array.isArray(data)) {
                 if (data.length === 0) {
-                    // This case should ideally be handled by backend 404, but double-check
+                    // Backend should send 404 if list is empty now, but handle defensively
                     displayInfo(`No completed anime titles found for '${username}'.`);
                 } else {
-                    // Display the raw titles
+                    // Display the raw titles using the corrected function
                     displayRawTitles(data);
                 }
             } else {
-                 // Response was not an array - something unexpected happened
+                 // If backend sends something other than an array (e.g., an error object not caught by !response.ok)
                  console.error("Received unexpected data format:", data);
+                 if (data.error) { throw new Error(data.error); } // Try to display backend error
+                 if (data.message) { throw new Error(data.message); } // Try to display backend message
                  throw new Error("Received unexpected data format from server.");
             }
 
@@ -66,30 +59,29 @@ document.addEventListener('DOMContentLoaded', () => {
             displayError(`An error occurred: ${error.message}`);
         } finally {
             loadingDiv.style.display = 'none'; fetchButton.disabled = false; usernameInput.disabled = false;
-            if (!errorDiv.style.display || errorDiv.style.display === 'none') { usernameInput.focus(); }
+             if (!errorDiv.style.display || errorDiv.style.display === 'none') { usernameInput.focus(); }
         }
     } // end fetchWallpapers
 
-    // --- *** NEW DISPLAY FUNCTION FOR RAW TITLES *** ---
+    // --- *** THIS FUNCTION DISPLAYS THE RAW TITLES *** ---
     function displayRawTitles(titles) {
         resultsDiv.innerHTML = ''; // Clear previous results
-        errorDiv.style.display = 'none';
-        infoDiv.style.display = 'none';
+        errorDiv.style.display = 'none'; infoDiv.style.display = 'none';
 
         const listTitle = document.createElement('h2');
+        // Sanitize output slightly in case titles have unexpected characters
         listTitle.textContent = `Found ${titles.length} Completed Title(s):`;
         resultsDiv.appendChild(listTitle);
 
         const ul = document.createElement('ul');
-        ul.style.listStyleType = 'disc'; // Simple bullet points
-        ul.style.marginLeft = '20px'; // Indent list
+        ul.style.listStyleType = 'disc'; ul.style.marginLeft = '20px';
 
         titles.forEach(title => {
             const li = document.createElement('li');
-            li.textContent = title; // Display the raw title
+            // Directly use the title string from the array
+            li.textContent = title;
             ul.appendChild(li);
         });
-
         resultsDiv.appendChild(ul);
     } // end displayRawTitles
 
