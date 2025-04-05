@@ -1,254 +1,204 @@
+# app.py
 import os
 import re
-import time
-from flask import Flask, jsonify, request
-from flask_cors import CORS
 import requests
-from jikanpy import Jikan
+from flask import Flask, render_template, jsonify, request
+from dotenv import load_dotenv
+
+# Load environment variables (optional, for API key)
+load_dotenv()
+
+app = Flask(__name__, static_folder='static', template_folder='templates')
 
 # --- Configuration ---
-# Get Wallhaven API Key from environment variable for security
-# You will set this up in Render later.
-WALLHAVEN_API_KEY = os.environ.get('WALLHAVEN_API_KEY', None)
+JIKAN_API_USER_URL = "https://api.jikan.moe/v4/users/{username}/animelist"
 WALLHAVEN_API_URL = "https://wallhaven.cc/api/v1/search"
-# Be polite to APIs - replace with your actual contact if deploying publicly
-USER_AGENT = "MAL_Wallhaven_App/1.0 (Contact: your_email@example.com)"
-
-# --- Flask App Setup ---
-app = Flask(__name__)
-# Allows requests from your frontend (update '*' to your specific frontend URL in production for better security)
-CORS(app)
-jikan = Jikan()
+# Get Wallhaven API Key from environment variables if available
+WALLHAVEN_API_KEY = os.getenv("WALLHAVEN_API_KEY")
+# Number of wallpapers to fetch per anime
+WALLPAPER_LIMIT = 5
 
 # --- Helper Functions ---
 
-def sanitize_anime_title(title):
-    """
-    Attempts to extract a base anime title for searching Wallhaven.
-    This is a simplified version and might need improvement for edge cases.
-    """
-    # Lowercase for easier matching
-    lower_title = title.lower()
+def clean_anime_title(title):
+    """ Basic cleaning and grouping of anime titles. """
+    # Lowercase
+    text = title.lower()
+    # Remove common season/part indicators
+    text = re.sub(r'\s(season\s?\d+|s\d+)\b', '', text)
+    text = re.sub(r'\s(part\s?\d+|p\d+)\b', '', text)
+    text = re.sub(r'\s(cour\s?\d+)\b', '', text)
+    # Remove specific types often appended
+    text = re.sub(r'\s?:\s?(the movie|movie|ova|ona|special|tv special)\b', '', text)
+    # Remove year in parentheses at the end, e.g., (2023)
+    text = re.sub(r'\s\(\d{4}\)$', '', text)
+    # Remove (TV) suffix
+    text = re.sub(r'\s\(tv\)$', '', text)
+    # Specific common sequel indicators (can be expanded)
+    text = re.sub(r'\s(2nd season|3rd season|4th season|5th season)', '', text) # Example
+    text = re.sub(r'\s[ivx]+$', '', text) # Roman numerals at end
+    # Replace common separators with spaces
+    text = text.replace(':', ' ').replace('-', ' ')
+    # Normalize whitespace
+    text = ' '.join(text.split())
+    return text.strip()
 
-    # Remove common season/part indicators and surrounding punctuation/spaces
-    # Improved patterns slightly
-    patterns_to_remove = [
-        r':.*', # Remove everything after a colon (often specifies season/arc) FIRST
-        r'\b(season|s)\s?\d+\b', # Season 1, S2, Season2
-        r'\bpart\s?\d+\b', # Part 1, Part1
-        r'\bpt\.?\s?\d+\b', # Pt. 1, Pt 1
-        r'\b\d+(st|nd|rd|th)\s+season\b', # 2nd Season
-        r'\bfinal\s+season\b', # Final Season
-        r'\b(tv|ova|ona|movie|special)\b', # Type indicators
-        r'\s+\(.*?\)', # Remove content inside parentheses at the end of string often
-        r'\s+\[.*?\]', # Remove content inside brackets at the end of string
-        r'^\s*the\s+', # Remove leading 'the '
-    ]
-
-    base_title = lower_title
-    for pattern in patterns_to_remove:
-        base_title = re.sub(pattern, '', base_title, flags=re.IGNORECASE).strip()
-
-    # Basic cleanup
-    base_title = re.sub(r'\s+', ' ', base_title).strip(' -:—') # Replace multiple spaces, trim trailing junk
-
-    # If removing everything left an empty string, revert to original (maybe it was just "Movie")
-    if not base_title:
-        return title.strip()
-
-    # Prioritize known franchises if possible (simple examples)
-    if 'shingeki no kyojin' in lower_title or 'attack on titan' in lower_title:
-        return 'Attack on Titan'
-    if 'kimetsu no yaiba' in lower_title or 'demon slayer' in lower_title:
-         return 'Demon Slayer Kimetsu no Yaiba'
-    # Add more specific rules here if needed
-
-    # Capitalize nicely
-    return ' '.join(word.capitalize() for word in base_title.split()).strip()
+def get_mal_completed_list(username):
+    """ Fetches the completed anime list for a MAL username from Jikan. """
+    params = {
+        'status': 'completed',
+        'sfw': 'true', # Filter for Safe-for-Work titles on MAL side if needed
+        # Jikan defaults to 25 per page, handle pagination for large lists if necessary
+        # 'page': 1
+    }
+    try:
+        response = requests.get(JIKAN_API_USER_URL.format(username=username), params=params, timeout=15)
+        response.raise_for_status() # Raises HTTPError for bad responses (4XX, 5XX)
+        return response.json().get('data', [])
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching MAL list for {username}: {e}")
+        if response.status_code == 404:
+             raise ValueError("MAL user not found")
+        raise ConnectionError(f"Could not connect to Jikan API: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred fetching MAL list: {e}")
+        raise RuntimeError("Internal error processing MAL data")
 
 
 def group_anime(anime_list):
-    """Groups anime list by sanitized base title."""
+    """ Groups anime list by cleaned titles. """
     grouped = {}
-    titles_processed = set() # Using MAL ID to track processed items
+    for item in anime_list:
+        original_title = item.get('anime', {}).get('title', 'Unknown Title')
+        mal_id = item.get('anime', {}).get('mal_id', None)
+        image_url = item.get('anime', {}).get('images', {}).get('jpg', {}).get('image_url')
 
-    if not anime_list: # Handle empty list case
-        return grouped
+        # Use the main title as the primary search term before cleaning for grouping
+        search_term = original_title
+        # Generate a simpler key for grouping similar seasons/parts
+        grouped_key = clean_anime_title(original_title)
 
-    for anime_entry in anime_list:
-        # Adjust based on actual JikanPy response structure for completed list
-        anime_info = anime_entry.get('anime', anime_entry) # Adapt if structure differs
-        original_title = anime_info.get('title', 'Unknown Title')
-        mal_id = anime_info.get('mal_id')
+        if grouped_key not in grouped:
+            grouped[grouped_key] = {
+                'display_title': original_title, # Show the most representative original title
+                'search_term': search_term, # Term to use for Wallhaven
+                'mal_ids': set(),
+                'image_url': image_url # Store one representative image
+            }
+        # Keep track of MAL IDs associated with this group
+        if mal_id:
+            grouped[grouped_key]['mal_ids'].add(mal_id)
+        # Update display title logic if needed (e.g., prefer shorter titles)
+        if len(original_title) < len(grouped[grouped_key]['display_title']):
+             grouped[grouped_key]['display_title'] = original_title
+             grouped[grouped_key]['image_url'] = image_url # Update image too
+             # Decide if search term should also update (maybe not)
 
-        # Use the MAL ID to ensure we only process each unique anime once,
-        if not mal_id or mal_id in titles_processed:
-            continue
+    # Convert mal_ids set back to list for JSON compatibility if needed later
+    # for key in grouped:
+    #    grouped[key]['mal_ids'] = list(grouped[key]['mal_ids'])
 
-        sanitized = sanitize_anime_title(original_title)
-
-        if sanitized not in grouped:
-            grouped[sanitized] = {'original_titles': set(), 'mal_ids': set(), 'wallpapers': []}
-
-        grouped[sanitized]['original_titles'].add(original_title)
-        grouped[sanitized]['mal_ids'].add(mal_id)
-        titles_processed.add(mal_id) # Mark this MAL ID as processed
-
-    print(f"Original count: {len(anime_list)}, Grouped count: {len(grouped)}") # Debugging
     return grouped
 
-def fetch_wallpapers(anime_title, count=5):
-    """Fetches wallpaper URLs from Wallhaven for a given anime title."""
-    if not WALLHAVEN_API_KEY:
-        print("Wallhaven API Key not set. Skipping wallpaper fetch.")
-        return []
-
-    # Add anime_title to query even if it contains special characters, Wallhaven might handle it
-    # Or consider more advanced query crafting e.g., '"' + anime_title + '"' for exact match attempt
+def get_wallpapers(anime_title):
+    """ Fetches wallpapers for an anime title from Wallhaven. """
     params = {
         'q': anime_title,
-        'categories': '010',  # General, Anime, People (0 = General, 1 = Anime, 0 = People)
-        'purity': '100',      # SFW only (110=SFW+Sketchy, 111=SFW+Sketchy+NSFW)
-        'sorting': 'relevance', # Or 'toplist', 'views', 'random', etc.
-        'order': 'desc',
-        'apikey': WALLHAVEN_API_KEY
+        'categories': '010',  # Anime category only
+        'purity': '100',      # SFW only
+        'sorting': 'relevance', # relevance, toplist, latest, random
+        # 'topRange': '1 M',   # If using toplist sorting
     }
-    headers = {'User-Agent': USER_AGENT}
-    wallpapers = []
-    try:
-        print(f"Querying Wallhaven for: {anime_title}")
-        response = requests.get(WALLHAVEN_API_URL, params=params, headers=headers, timeout=20) # Increased timeout
-        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
-        data = response.json()
+    if WALLHAVEN_API_KEY:
+        params['apikey'] = WALLHAVEN_API_KEY
 
-        if data and 'data' in data:
-            for item in data['data'][:count]: # Get top 'count' results
-                 if 'path' in item:
-                    wallpapers.append(item['path']) # 'path' is the full image URL
+    try:
+        response = requests.get(WALLHAVEN_API_URL, params=params, timeout=10)
+        response.raise_for_status()
+        wallpapers_data = response.json().get('data', [])
+
+        results = []
+        for wall in wallpapers_data[:WALLPAPER_LIMIT]: # Limit results
+             # Use large thumbnail for preview, path for full image link
+            thumb = wall.get('thumbs', {}).get('large')
+            full_img = wall.get('path')
+            if thumb and full_img:
+                 results.append({'thumbnail': thumb, 'full': full_img})
+        return results
 
     except requests.exceptions.RequestException as e:
-        # Log more specific error if possible (e.g., status code)
-        status_code = e.response.status_code if e.response is not None else "N/A"
-        print(f"Error fetching wallpapers for '{anime_title}' (Status: {status_code}): {e}")
+        print(f"Error fetching Wallhaven wallpapers for '{anime_title}': {e}")
+        # Don't crash the whole process, just return empty list for this anime
+        return []
     except Exception as e:
-        print(f"An unexpected error occurred fetching wallpapers for '{anime_title}': {e}")
+        print(f"An unexpected error occurred fetching Wallhaven data: {e}")
+        return []
 
-    print(f"Found {len(wallpapers)} wallpapers for '{anime_title}'") # Debugging
-    return wallpapers
+# --- Routes ---
 
+@app.route('/')
+def index():
+    """ Serves the main HTML page. """
+    return render_template('index.html')
 
-# --- API Endpoint ---
-@app.route('/api/wallpapers/<username>', methods=['GET'])
-def get_user_wallpapers(username):
+@app.route('/api/wallpapers/<username>')
+def get_anime_wallpapers(username):
+    """ API endpoint to get grouped anime and wallpapers. """
     if not username:
         return jsonify({"error": "MAL username is required"}), 400
 
-    print(f"Fetching data for MAL user: {username}")
-
-    all_anime_data = []
-    page = 1
-    # Limit pages to avoid excessively long requests/hitting rate limits.
-    # MAL lists can be huge! Consider if you *really* need the whole list
-    # or maybe just top N scored/recently completed?
-    max_pages = 15 # Increased limit slightly, use with caution
-
     try:
-        while page <= max_pages:
-            print(f"Fetching MAL completed list page {page} for {username}...")
-            # Fetch user's completed list, ordered by score descending
-            user_list_response = jikan.user(username=username, request='animelist', argument='completed', page=page, parameters={'order_by': 'score', 'sort': 'desc'})
+        print(f"Fetching MAL list for user: {username}")
+        mal_list = get_mal_completed_list(username)
+        if not mal_list:
+             # Could be empty list or actual error handled in get_mal_completed_list
+             # Assuming empty list means no completed anime found for a valid user
+             print(f"No completed anime found for {username} or Jikan error occurred.")
+             # Check if the user actually exists separately if needed
+             return jsonify({"message": f"No completed anime found for user '{username}' or user does not exist."}), 404
 
-            # Jikan V4 structure has data under 'data' key
-            current_page_anime = user_list_response.get('data', [])
+        print(f"Found {len(mal_list)} completed anime entries. Grouping...")
+        grouped_anime = group_anime(mal_list)
+        print(f"Grouped into {len(grouped_anime)} unique series.")
 
-            if current_page_anime:
-                all_anime_data.extend(current_page_anime)
-                # Check pagination from Jikan V4 response
-                pagination = user_list_response.get('pagination', {})
-                if pagination.get('has_next_page', False):
-                     page += 1
-                     # Rate limit delay for Jikan API (adjust as needed, ~1-2 seconds is polite)
-                     time.sleep(2)
-                else:
-                     print("No more pages found in MAL list.")
-                     break # No more pages
-            else:
-                 # No anime found on this page (or subsequent pages), or error
-                 print(f"No anime data found on page {page} or Jikan response format unexpected.")
-                 break
-
-        if not all_anime_data:
-             # Check if the user exists or list is private (Jikan might raise exception earlier for 404)
-             print(f"No completed anime found or profile private/invalid for user: {username}")
-             # Attempt a basic user profile fetch to differentiate Not Found vs Empty List
-             try:
-                 profile = jikan.user(username=username)
-                 if profile: # User exists, list must be empty or private
-                     return jsonify({"error": f"User '{username}' found, but their completed list is empty or private."}), 404
-             except Exception: # Assume user not found if profile fetch fails
-                return jsonify({"error": f"MAL user '{username}' not found."}), 404
-             # Fallback if profile check complicated things
-             return jsonify({"error": f"No completed anime found for user '{username}', or their list is private/empty."}), 404
-
-
-        print(f"Total completed anime fetched: {len(all_anime_data)}")
-
-        # Group anime
-        grouped_anime = group_anime(all_anime_data)
-
+        results = {}
         # Fetch wallpapers for each group
-        results = []
-        # Add counter for debugging/progress
-        group_count = len(grouped_anime)
-        current_group = 0
-        for base_title, data in grouped_anime.items():
-            current_group += 1
-            print(f"Processing group {current_group}/{group_count}: Fetching wallpapers for '{base_title}'")
-            wallpapers = fetch_wallpapers(base_title, count=5)
-            results.append({
-                'grouped_title': base_title,
-                'original_titles': sorted(list(data['original_titles'])), # Sort for consistent output
-                'wallpapers': wallpapers
-            })
-            # Be polite to Wallhaven API - Rate limit is per minute usually (e.g. 30/min)
-            # A short delay helps stay under limits for potentially many groups.
-            time.sleep(1.5) # Adjust as needed based on list size and rate limits
+        # Consider making these calls asynchronous for better performance if list is large
+        print("Fetching wallpapers from Wallhaven...")
+        count = 0
+        for key, data in grouped_anime.items():
+            count += 1
+            print(f"  ({count}/{len(grouped_anime)}) Searching for: {data['search_term']} (Group: {key})")
+            wallpapers = get_wallpapers(data['search_term'])
+            if wallpapers: # Only include anime with found wallpapers
+                 results[key] = {
+                      'display_title': data['display_title'],
+                      'mal_cover': data['image_url'], # Add MAL cover
+                      'wallpapers': wallpapers
+                 }
+            else:
+                 print(f"    -> No wallpapers found.")
+        
+        print("Finished fetching wallpapers.")
+        if not results:
+             return jsonify({"message": "Found completed anime, but no wallpapers could be retrieved from Wallhaven for these titles."}), 200 # Or 404? 200 seems ok.
 
-        print(f"Finished processing {len(results)} groups.")
         return jsonify(results)
 
-    # More specific error handling based on Jikan exceptions if possible
-    except requests.exceptions.HTTPError as e:
-         # Handle HTTP errors from Jikan/requests specifically
-         status_code = e.response.status_code
-         print(f"HTTP error contacting Jikan/MAL for {username}: Status {status_code}, Response: {e.response.text}")
-         if status_code == 404:
-              return jsonify({"error": f"MAL user '{username}' not found or list is private."}), 404
-         elif status_code == 429: # Too Many Requests
-              return jsonify({"error": "Rate limit hit fetching MAL data. Please try again later."}), 429
-         elif status_code == 403: # Forbidden
-              return jsonify({"error": f"Access denied fetching MAL data for '{username}'. List might be private."}), 403
-         else:
-              return jsonify({"error": f"Could not retrieve MAL data for '{username}'. API returned status {status_code}."}), 503 # Service Unavailable
-
-    except requests.exceptions.RequestException as e:
-         # Handle other network errors (DNS, connection refused etc.)
-         print(f"Network error contacting Jikan/MAL for {username}: {e}")
-         return jsonify({"error": f"Could not connect to MAL services. Check network or try again later."}), 504 # Gateway Timeout
-
+    except ValueError as e: # Specific error for User Not Found
+        return jsonify({"error": str(e)}), 404
+    except ConnectionError as e: # Specific error for connection issues
+         return jsonify({"error": str(e)}), 503 # Service Unavailable
+    except RuntimeError as e: # Specific error for internal processing
+         return jsonify({"error": str(e)}), 500
     except Exception as e:
-        # Catch potential JikanPy specific errors or other unexpected issues
-        print(f"An unexpected error occurred processing MAL user {username}: {e}")
-        import traceback
-        traceback.print_exc() # Print full traceback to Render logs for debugging
-        return jsonify({"error": "An internal server error occurred while processing the request."}), 500
+        # Generic catch-all
+        print(f"An unhandled error occurred: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- Run the App (for local testing) ---
-# This block is NOT used by Render (it uses the Procfile + gunicorn)
-# Run `python app.py` in your terminal to test locally
+# --- Main Execution ---
 if __name__ == '__main__':
-    # Use 0.0.0.0 to be accessible on your local network
-    # Default port is 5000
-    print("Starting Flask development server...")
-    # Turn off debug mode for production simulation, or keep True for local dev details
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    # Use environment variable for port if available (for Render), otherwise default to 5000
+    port = int(os.environ.get('PORT', 5000))
+    # Set debug=False for production on Render
+    app.run(host='0.0.0.0', port=port, debug=False)
