@@ -1,0 +1,238 @@
+/* static/style.css */
+:root {
+    --primary-color: #2E51A2; /* MAL Blue */
+    --secondary-color: #4CAF50; /* Green */
+    --background-color: #f8f9fa; /* Lighter gray */
+    --card-background: #ffffff;
+    --text-color: #343a40;
+    --border-color: #dee2e6;
+    --error-bg: #f8d7da;
+    --error-border: #f5c6cb;
+    --error-text: #721c24;
+    --info-bg: #e2e3e5;
+    --info-border: #d6d8db;
+    --info-text: #383d41;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: var(--background-color);
+    color: var(--text-color);
+    line-height: 1.6;
+}
+
+header {
+    background-color: var(--primary-color);
+    color: #fff;
+    padding: 1.5rem 1rem;
+    text-align: center;
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+header h1 {
+    margin: 0 0 0.5rem 0;
+    font-weight: 600;
+}
+
+main {
+    max-width: 1200px;
+    margin: auto;
+    padding: 0 1rem 2rem 1rem; /* Add padding bottom */
+}
+
+.search-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 2rem;
+    gap: 0.5rem;
+    flex-wrap: wrap; /* Allow wrapping on smaller screens */
+}
+
+#malUsername {
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 1rem;
+    flex-grow: 1;
+    max-width: 400px;
+    min-width: 200px; /* Ensure minimum width */
+}
+
+#fetchButton {
+    padding: 0.8rem 1.5rem;
+    background-color: var(--secondary-color);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 500;
+    transition: background-color 0.3s ease, box-shadow 0.2s ease;
+}
+
+#fetchButton:hover {
+    background-color: #45a049;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+#fetchButton:active {
+     background-color: #3e8e41;
+}
+
+/* Message Containers */
+.loading, .error, .info {
+    text-align: center;
+    margin: 2rem auto; /* Center horizontally */
+    padding: 1rem 1.5rem;
+    border-radius: 5px;
+    max-width: 600px; /* Limit width */
+    border: 1px solid; /* Border defined by specific class */
+    display: none; /* Hidden by default */
+}
+
+.loading {
+    color: #555;
+    border-color: var(--border-color);
+    display: flex; /* Use flex for spinner alignment */
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.error {
+    background-color: var(--error-bg);
+    border-color: var(--error-border);
+    color: var(--error-text);
+}
+
+.info {
+    background-color: var(--info-bg);
+    border-color: var(--info-border);
+    color: var(--info-text);
+}
+
+
+/* Simple CSS Spinner */
+.spinner {
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border-left-color: var(--secondary-color); /* Match button color */
+    animation: spin 1s linear infinite; /* Use linear for smoother spin */
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+
+.results-container {
+    margin-top: 2rem;
+}
+
+.anime-group {
+    background-color: var(--card-background);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 2rem;
+    padding: 1.5rem;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    overflow: hidden; /* Contain elements */
+}
+
+.anime-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 1rem;
+}
+
+.anime-cover {
+    width: 50px;
+    height: 70px; /* Slightly taller aspect ratio for covers */
+    object-fit: cover; /* Ensure image covers area nicely */
+    border-radius: 4px;
+    flex-shrink: 0; /* Prevent shrinking */
+}
+
+.anime-title {
+    margin: 0;
+    font-size: 1.4rem; /* Slightly smaller title */
+    font-weight: 600;
+    color: var(--primary-color);
+    flex-grow: 1; /* Allow title to take available space */
+}
+
+
+.wallpaper-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); /* Adjust min size */
+    gap: 1rem;
+}
+
+.wallpaper-item img {
+    width: 100%;
+    aspect-ratio: 16 / 9; /* Maintain aspect ratio */
+    object-fit: cover; /* Cover the area */
+    display: block;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.wallpaper-item img:hover {
+    transform: scale(1.04); /* Slightly larger hover effect */
+    box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+}
+
+footer {
+    text-align: center;
+    margin-top: 3rem;
+    padding: 1.5rem 1rem;
+    color: #6c757d; /* Grayer text */
+    font-size: 0.9rem;
+    border-top: 1px solid var(--border-color);
+}
+
+footer a {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
+footer a:hover {
+    text-decoration: underline;
+}
+
+/* Basic Responsive Adjustments */
+@media (max-width: 600px) {
+    .search-container {
+        flex-direction: column;
+        align-items: stretch; /* Make input/button full width */
+    }
+
+    #malUsername {
+       max-width: none; /* Allow full width */
+       margin-bottom: 0.5rem; /* Add space below input */
+    }
+
+    .anime-title {
+        font-size: 1.2rem;
+    }
+
+    .wallpaper-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 0.75rem;
+    }
+
+    .anime-group {
+        padding: 1rem;
+    }
+}
