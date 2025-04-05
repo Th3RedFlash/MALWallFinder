@@ -1,5 +1,5 @@
-Flask
-Flask-Cors
-requests
-JikanPy
-gunicorn
+# requirements.txt
+Flask>=2.0
+requests>=2.25
+gunicorn>=20.0 # For deployment on Render
+python-dotenv>=0.15 # Optional: for loading .env file locally
