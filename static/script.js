@@ -1,4 +1,4 @@
-// static/script.js
+// static/script.js (TEST VERSION - Displays Raw Titles)
 document.addEventListener('DOMContentLoaded', () => {
     const usernameInput = document.getElementById('malUsername');
     const fetchButton = document.getElementById('fetchButton');
@@ -18,71 +18,89 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!username) { displayError("Please enter a MAL username."); usernameInput.focus(); return; }
 
         resultsDiv.innerHTML = ''; errorDiv.style.display = 'none'; infoDiv.style.display = 'none';
-        loadingText.textContent = 'Fetching data, this might take a moment...';
+        loadingText.textContent = 'Fetching MAL titles...'; // Updated text
         loadingDiv.style.display = 'flex';
         fetchButton.disabled = true; usernameInput.disabled = true;
 
         try {
             const apiUrl = `/api/wallpapers/${encodeURIComponent(username)}`;
-            console.log(`Workspaceing from API: ${apiUrl}`);
+            console.log(`Workspaceing TEST data from API: ${apiUrl}`);
             const response = await fetch(apiUrl);
 
+            // Check for non-OK response (e.g., 404 User Not Found, 5xx Server Error)
             if (!response.ok) {
                 let errorMsg = `Error ${response.status}: ${response.statusText}`;
                 let detailedError = '';
-                try { const errorData = await response.json(); detailedError = errorData.error || errorData.message || ''; if (detailedError) { errorMsg = detailedError; }
-                } catch (jsonError) { console.warn("Could not parse error response as JSON:", jsonError); }
-
-                if (response.status === 404 && errorMsg.toLowerCase().includes("mal user not found")) { errorMsg = `MyAnimeList user '${username}' not found or profile is private. Please check the username and MAL visibility settings.`;
-                } else if (response.status === 503 || errorMsg.toLowerCase().includes("rate limited")) { errorMsg = `The service is currently busy or rate-limited. Please wait a moment and try again. (${response.status})`;
-                } else if (!detailedError) { errorMsg += ". Please check the logs or try again later."; }
+                try {
+                    const errorData = await response.json();
+                    // Use specific 'error' or 'message' field from backend response
+                    detailedError = errorData.error || errorData.message || '';
+                    if (detailedError) { errorMsg = detailedError; } // Use backend message if more specific
+                } catch (jsonError) {
+                     console.warn("Could not parse error response as JSON:", jsonError);
+                     errorMsg += ". Check Render logs for backend errors."; // Add advice
+                }
                 throw new Error(errorMsg);
             }
 
+            // --- Process successful response (EXPECTING AN ARRAY OF STRINGS) ---
             const data = await response.json();
 
-            if (data.message && Object.keys(data).length === 1) { displayInfo(data.message);
-            } else if (!data || Object.keys(data).length === 0) { displayInfo(`Could not find any relevant wallpapers for ${username}'s completed list on Wallhaven.`);
-            } else { displayResults(data); }
+            // Check if the response is actually an array (of titles)
+            if (Array.isArray(data)) {
+                if (data.length === 0) {
+                    // This case should ideally be handled by backend 404, but double-check
+                    displayInfo(`No completed anime titles found for '${username}'.`);
+                } else {
+                    // Display the raw titles
+                    displayRawTitles(data);
+                }
+            } else {
+                 // Response was not an array - something unexpected happened
+                 console.error("Received unexpected data format:", data);
+                 throw new Error("Received unexpected data format from server.");
+            }
 
         } catch (error) {
             console.error('Operation failed:', error);
             displayError(`An error occurred: ${error.message}`);
         } finally {
             loadingDiv.style.display = 'none'; fetchButton.disabled = false; usernameInput.disabled = false;
-            if (!errorDiv.style.display || errorDiv.style.display === 'none') { usernameInput.focus(); } // Focus input only if no error displayed
+            if (!errorDiv.style.display || errorDiv.style.display === 'none') { usernameInput.focus(); }
         }
     } // end fetchWallpapers
 
-    function displayResults(data) {
-        resultsDiv.innerHTML = ''; errorDiv.style.display = 'none'; infoDiv.style.display = 'none';
-        const sortedKeys = Object.keys(data).sort((a, b) => data[a].display_title.localeCompare(data[b].display_title));
-        if(sortedKeys.length === 0) { displayInfo("No results to display."); return; }
+    // --- *** NEW DISPLAY FUNCTION FOR RAW TITLES *** ---
+    function displayRawTitles(titles) {
+        resultsDiv.innerHTML = ''; // Clear previous results
+        errorDiv.style.display = 'none';
+        infoDiv.style.display = 'none';
 
-        sortedKeys.forEach(key => {
-            const animeData = data[key];
-            if (!animeData || !animeData.wallpapers || animeData.wallpapers.length === 0) return;
-            const animeGroupDiv = document.createElement('div'); animeGroupDiv.className = 'anime-group';
-            const animeHeaderDiv = document.createElement('div'); animeHeaderDiv.className = 'anime-header';
-            if (animeData.mal_cover) {
-                const coverImg = document.createElement('img'); coverImg.src = animeData.mal_cover; coverImg.alt = `${animeData.display_title} Cover`; coverImg.className = 'anime-cover'; coverImg.loading = 'lazy';
-                coverImg.onerror = () => { coverImg.style.display = 'none'; }; animeHeaderDiv.appendChild(coverImg);
-            }
-            const titleElement = document.createElement('h2'); titleElement.className = 'anime-title'; titleElement.textContent = animeData.display_title; animeHeaderDiv.appendChild(titleElement);
-            animeGroupDiv.appendChild(animeHeaderDiv);
+        const listTitle = document.createElement('h2');
+        listTitle.textContent = `Found ${titles.length} Completed Title(s):`;
+        resultsDiv.appendChild(listTitle);
 
-            const wallpaperGridDiv = document.createElement('div'); wallpaperGridDiv.className = 'wallpaper-grid';
-            animeData.wallpapers.forEach(wallpaper => {
-                const wallpaperLink = document.createElement('a'); wallpaperLink.href = wallpaper.full; wallpaperLink.target = '_blank'; wallpaperLink.rel = 'noopener noreferrer'; wallpaperLink.className = 'wallpaper-item'; wallpaperLink.title = `View full wallpaper for ${animeData.display_title}`;
-                const imgElement = document.createElement('img'); imgElement.src = wallpaper.thumbnail; imgElement.alt = `Wallpaper preview for ${animeData.display_title}`; imgElement.loading = 'lazy';
-                imgElement.onerror = (e) => { e.target.closest('a').style.display='none'; }; // Hide item if thumb fails
-                wallpaperLink.appendChild(imgElement); wallpaperGridDiv.appendChild(wallpaperLink);
-            });
-            animeGroupDiv.appendChild(wallpaperGridDiv); resultsDiv.appendChild(animeGroupDiv);
+        const ul = document.createElement('ul');
+        ul.style.listStyleType = 'disc'; // Simple bullet points
+        ul.style.marginLeft = '20px'; // Indent list
+
+        titles.forEach(title => {
+            const li = document.createElement('li');
+            li.textContent = title; // Display the raw title
+            ul.appendChild(li);
         });
-    } // end displayResults
 
-    function displayError(message) { resultsDiv.innerHTML = ''; infoDiv.style.display = 'none'; errorDiv.textContent = message; errorDiv.style.display = 'block'; }
-    function displayInfo(message) { resultsDiv.innerHTML = ''; errorDiv.style.display = 'none'; infoDiv.textContent = message; infoDiv.style.display = 'block'; }
+        resultsDiv.appendChild(ul);
+    } // end displayRawTitles
+
+    // --- Helper display functions (error/info) ---
+    function displayError(message) {
+        resultsDiv.innerHTML = ''; infoDiv.style.display = 'none';
+        errorDiv.textContent = message; errorDiv.style.display = 'block';
+    }
+    function displayInfo(message) {
+        resultsDiv.innerHTML = ''; errorDiv.style.display = 'none';
+        infoDiv.textContent = message; infoDiv.style.display = 'block';
+    }
 
 }); // End DOMContentLoaded listener
