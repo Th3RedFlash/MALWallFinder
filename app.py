@@ -3,7 +3,8 @@ import os
 import re
 import requests
 import traceback
-from bs4 import BeautifulSoup # Import BeautifulSoup
+import json # Import json library
+from bs4 import BeautifulSoup
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -14,87 +15,93 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
 
 # --- Configuration ---
-MAL_LIST_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}?status=2" # status=2 is 'Completed'
+WALLHAVEN_API_URL = "https://wallhaven.cc/api/v1/search"
+WALLHAVEN_API_KEY = os.getenv("WALLHAVEN_API_KEY")
+WALLPAPER_LIMIT = 5
+# MAL URLs
+MAL_LIST_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}?status=2" # HTML page
+MAL_JSON_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}/load.json?status=2&offset=0" # Undocumented JSON endpoint
 
 # --- Helper Functions ---
-# Scraper function (ensure it exists and is correct)
-def get_mal_completed_list_from_scrape(username):
-    """ Fetches and scrapes the completed anime list directly from MAL website. """
-    mal_url = MAL_LIST_URL_TEMPLATE.format(username=username)
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    print(f"  [Scraper] Requesting URL: {mal_url}")
+
+def clean_anime_title(title):
+    """ Basic cleaning of anime titles for grouping/searching. """
+    # Using the simpler cleaning function for now
+    text = title.lower()
+    text = re.sub(r'\s(season\s?\d+|s\d+)\b', '', text)
+    text = re.sub(r'\s(part\s?\d+|p\d+)\b', '', text)
+    text = re.sub(r'\s(cour\s?\d+)\b', '', text)
+    text = re.sub(r'\s?:\s?(the movie|movie|ova|ona|special|tv special)\b', '', text)
+    text = re.sub(r'\s\(\d{4}\)<span class="math-inline">', '', text\)
+text \= re\.sub\(r'\\s\\\(tv\\\)</span>', '', text)
+    text = re.sub(r'\s(2nd season|3rd season|4th season|5th season)', '', text)
+    text = re.sub(r'\s[ivx]+<span class="math-inline">', '', text\)
+text \= text\.replace\('\:', ' '\)\.replace\('\-', ' '\)
+text \= ' '\.join\(text\.split\(\)\)
+return text\.strip\(\)
+\# Definition for simplify\_title from the FastAPI code \(optional to use later\)
+\# def simplify\_title\(title\)\:
+\#     title \= title\.strip\(\); match\_colon \= re\.search\(r'\:\\s', title\)
+\#     if match\_colon\: title \= title\[\:match\_colon\.start\(\)\]\.strip\(\)
+\#     cleaned\_title \= re\.split\(r'\\s\+\\b\(?\:Season\|Part\|Cour\|Movies?\|Specials?\|OVAs?\|Partie\|Saison\|Staffel\|The Movie\|Movie\|Film\|\\d\{1,2\}\)\\b', title, maxsplit\=1, flags\=re\.IGNORECASE\)\[0\]
+\#     cleaned\_title \= re\.sub\(r'\\s\*\[\:\\\-\]\\s\*</span>', '', cleaned_title).strip()
+#     if re.match(r'.+\s+\d+<span class="math-inline">', cleaned\_title\)\: cleaned\_title \= re\.split\(r'\\s\+\\d\+</span>', cleaned_title)[0].strip()
+#     return cleaned_title if cleaned_title else title
+
+
+# --- NEW MAL DATA FETCH FUNCTION (JSON Attempt + HTML Fallback) ---
+def fetch_mal_data(username):
+    """
+    Attempts to fetch MAL completed list data, first via undocumented JSON endpoint,
+    then falls back to HTML scraping.
+    Returns a list of dictionaries: [{'title': str, 'mal_id': int|None, 'image_url': str|None}]
+    Raises exceptions on complete failure.
+    """
+    anime_data_list = []
+    mal_data_fetched_successfully = False
+    last_error_message = "Unknown error during MAL fetch."
+    processed_ids = set() # To avoid duplicates if both methods run weirdly
+
+    # Define headers once
+    # Using a common browser User-Agent can sometimes help avoid simple blocks
+    mal_fetch_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36"}
+
+    # --- Attempt 1: JSON Endpoint ---
+    mal_json_url = MAL_JSON_URL_TEMPLATE.format(username=username)
+    print(f"  [MAL Fetch] Attempt 1: Fetching JSON from {mal_json_url}")
     try:
-        response = requests.get(mal_url, headers=headers, timeout=20)
-        print(f"  [Scraper] Response Status Code: {response.status_code}")
-        if response.status_code == 404:
-            print(f"  [Scraper] Received 404 for user: {username}. MAL profile might be private or non-existent.")
-            raise ValueError(f"MyAnimeList user '{username}' not found or profile is private.")
-        elif response.status_code != 200:
-            print(f"  [Scraper] Received non-200 status code: {response.status_code}")
-            raise ConnectionError(f"Could not fetch MAL page (Status: {response.status_code}). Check username and profile visibility.")
+        response = requests.get(mal_json_url, headers=mal_fetch_headers, timeout=20)
+        print(f"  [MAL Fetch] JSON attempt - Status Code: {response.status_code}")
+        actual_content_type = response.headers.get('Content-Type', 'N/A').lower()
+        print(f"  [MAL Fetch] JSON attempt - Content-Type: {actual_content_type}")
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        title_tags = soup.select("td.data.title.clearfix a.link.sort") # CSS Selector from your file [cite: 4]
-
-        if not title_tags:
-            list_table = soup.select_one("table.list-table")
-            if list_table and "No anime found" in list_table.get_text():
-                 print(f"  [Scraper] MAL page indicates 'No anime found'.")
-                 return []
-            else:
-                 print(f"  [Scraper] No anime title elements found using selector. List might be empty, private, or MAL structure changed.")
-                 return []
-
-        anime_titles = [tag.get_text(strip=True) for tag in title_tags if tag]
-        print(f"  [Scraper] Found {len(anime_titles)} titles for {username}.")
-        return anime_titles
-    except requests.exceptions.RequestException as e:
-        print(f"  [Scraper] RequestException occurred: {type(e).__name__} - {e}")
-        raise ConnectionError(f"Network error fetching MAL page: {e}")
-    except Exception as e:
-        print(f"  [Scraper] An unexpected error occurred during scraping: {type(e).__name__} - {e}")
-        traceback.print_exc()
-        raise RuntimeError("Internal error processing MAL page.")
-
-# --- Routes ---
-@app.route('/')
-def index():
-    """ Serves the main HTML page. """
-    print("[Request] Received request for / route")
-    try: return render_template('index.html')
-    except Exception as e: print(f"[Error] Error rendering template index.html: {type(e).__name__} - {e}"); traceback.print_exc(); raise e
-
-# --- *** SIMPLIFIED API ENDPOINT FOR TESTING *** ---
-@app.route('/api/wallpapers/<username>')
-def get_anime_wallpapers_test(username):
-    """ TEST VERSION: Fetches MAL list via scraper and returns only the raw title list. """
-    print(f"[Request] Received TEST API request for username: {username}")
-    if not username: return jsonify({"error": "MAL username is required"}), 400
-    try:
-        print(f"  [Flow-Test] Fetching MAL list via direct scraping for: {username}")
-        mal_title_list = get_mal_completed_list_from_scrape(username) # Call the scraper
-
-        if mal_title_list is None: # Handle potential None return, though it should raise exceptions on error
-             print("  [Result-Test] Scraper returned None unexpectedly.")
-             raise RuntimeError("Scraper failed unexpectedly.")
-        elif not mal_title_list: # Check for empty list specifically
-             print("  [Result-Test] Scraper returned no titles.")
-             return jsonify({"message": f"No completed anime titles found for user '{username}' by scraper (list empty/private or MAL structure changed?)."}), 404
-        else:
-             # Return the list of titles directly as JSON
-             print(f"  [Result-Test] Returning list of {len(mal_title_list)} raw titles.")
-             return jsonify(mal_title_list) # Returns ["Title 1", "Title 2", ...]
-
-    except ValueError as e: print(f"[Error-Test] ValueError: {e}"); return jsonify({"error": str(e)}), 404
-    except ConnectionError as e: print(f"[Error-Test] ConnectionError: {e}"); return jsonify({"error": str(e)}), 503
-    except RuntimeError as e: print(f"[Error-Test] RuntimeError: {e}"); return jsonify({"error": str(e)}), 500
-    except Exception as e:
-        print(f"[Error-Test] An unhandled error occurred in API endpoint: {type(e).__name__} - {e}")
-        traceback.print_exc(); return jsonify({"error": "An unexpected internal server error occurred"}), 500
-# --- *** END OF SIMPLIFIED API ENDPOINT *** ---
-
-# --- Main Execution ---
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Flask app on host 0.0.0.0, port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+        # Check if response looks like valid JSON and status is OK
+        if response.status_code == 200 and 'application/json' in actual_content_type:
+            print(f"  [MAL Fetch] JSON attempt - Content-Type OK. Parsing JSON...")
+            try:
+                mal_data = response.json()
+                # Check if it's the expected list format
+                if isinstance(mal_data, list):
+                    print(f"  [MAL Fetch] JSON attempt - Successfully parsed JSON list ({len(mal_data)} items).")
+                    count = 0
+                    for item in mal_data:
+                        # status=2 means completed in MAL's list data
+                        if isinstance(item, dict) and item.get('status') == 2:
+                            title = item.get('anime_title')
+                            anime_id = item.get('anime_id')
+                            # MAL JSON often doesn't include a direct image URL easily here
+                            # We could potentially construct one, but let's keep it simple
+                            image_url = None # item.get('anime_image_path') # Usually not present/useful directly
+                            if title and anime_id and anime_id not in processed_ids:
+                                anime_data_list.append({
+                                    'title': title.strip(),
+                                    'mal_id': anime_id,
+                                    'image_url': image_url # Will be None
+                                })
+                                processed_ids.add(anime_id)
+                                count += 1
+                    print(f"  [MAL Fetch] JSON attempt - Extracted {count} completed titles.")
+                    if count > 0:
+                        mal_data_fetched_successfully = True
+                else:
+                    last_error_message = "MAL JSON attempt - Parsed JSON but it was not a list."
