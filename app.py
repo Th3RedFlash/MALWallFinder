@@ -3,7 +3,7 @@ import os
 import re
 import requests
 import traceback
-import json # Import json library
+import json
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
@@ -18,9 +18,8 @@ CORS(app)
 WALLHAVEN_API_URL = "https://wallhaven.cc/api/v1/search"
 WALLHAVEN_API_KEY = os.getenv("WALLHAVEN_API_KEY")
 WALLPAPER_LIMIT = 5
-# MAL URLs
-MAL_LIST_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}?status=2" # HTML page
-MAL_JSON_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}/load.json?status=2&offset=0" # Undocumented JSON endpoint
+MAL_LIST_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}?status=2"
+MAL_JSON_URL_TEMPLATE = "https://myanimelist.net/animelist/{username}/load.json?status=2&offset=0"
 
 # --- Helper Functions ---
 
@@ -31,16 +30,15 @@ def clean_anime_title(title):
     text = re.sub(r'\s(part\s?\d+|p\d+)\b', '', text)
     text = re.sub(r'\s(cour\s?\d+)\b', '', text)
     text = re.sub(r'\s?:\s?(the movie|movie|ova|ona|special|tv special)\b', '', text)
-    # Line 35: Removed stray backslash before closing parenthesis
-    text = re.sub(r'\s\(\d{4}\)$', '', text) # Remove year in parentheses at end, e.g. (2023)
+    text = re.sub(r'\s\(\d{4}\)$', '', text) # Remove year in parentheses at end
     text = re.sub(r'\s\(tv\)$', '', text)
     text = re.sub(r'\s(2nd season|3rd season|4th season|5th season)', '', text)
-    text = re.sub(r'\s[ivx]+$', '', text) # Roman numerals at end
+    text = re.sub(r'\s[ivx]+$', '', text)
     text = text.replace(':', ' ').replace('-', ' ')
     text = ' '.join(text.split())
     return text.strip()
 
-# --- NEW MAL DATA FETCH FUNCTION (JSON Attempt + HTML Fallback) ---
+# --- MAL DATA FETCH FUNCTION (JSON Attempt + HTML Fallback) ---
 def fetch_mal_data(username):
     """ Attempts to fetch MAL completed list data, first via undocumented JSON endpoint, then falls back to HTML scraping. """
     anime_data_list = []
@@ -91,7 +89,7 @@ def fetch_mal_data(username):
             elif response.status_code != 200: raise ConnectionError(f"Could not fetch MAL HTML page (Status: {response.status_code}).")
 
             soup = BeautifulSoup(response.text, "html.parser")
-            title_tags = soup.select("td.data.title.clearfix a.link.sort") # This selector is fragile!
+            title_tags = soup.select("td.data.title.clearfix a.link.sort")
 
             if not title_tags:
                  list_table = soup.select_one("table.list-table")
@@ -109,9 +107,25 @@ def fetch_mal_data(username):
                              processed_ids.add(temp_id_placeholder); count += 1
                  print(f"  [MAL Fetch] HTML attempt - Extracted {count} titles via scraping.")
                  if count > 0 or (title_tags is not None): mal_data_fetched_successfully = True
-        except (ValueError, ConnectionError, RuntimeError) as e: last_error_message = f"MAL HTML attempt - Failed: {e}"; print(f"  [MAL Fetch] {last_error_message}"); if not anime_data_list: raise e
-        except requests.exceptions.RequestException as e: last_error_message = f"MAL HTML attempt - Network Error: {e}"; print(f"  [MAL Fetch] {last_error_message}"); if not anime_data_list: raise ConnectionError(last_error_message)
-        except Exception as e: last_error_message = f"MAL HTML attempt - Unexpected error: {e}"; print(f"  [MAL Fetch] {last_error_message}"); traceback.print_exc(); if not anime_data_list: raise RuntimeError(last_error_message)
+
+        # --- CORRECTED EXCEPTION BLOCK (Line 112 area) ---
+        except (ValueError, ConnectionError, RuntimeError) as e:
+            last_error_message = f"MAL HTML attempt - Failed: {e}"
+            print(f"  [MAL Fetch] {last_error_message}")
+            # Raise the error only if JSON also failed (anime_data_list is still empty)
+            if not anime_data_list:
+                raise e # Put 'raise e' on its own indented line
+        except requests.exceptions.RequestException as e:
+            last_error_message = f"MAL HTML attempt - Network Error: {e}"
+            print(f"  [MAL Fetch] {last_error_message}")
+            if not anime_data_list:
+                raise ConnectionError(last_error_message) # Put 'raise' on its own indented line
+        except Exception as e:
+            last_error_message = f"MAL HTML attempt - Unexpected error: {e}"
+            print(f"  [MAL Fetch] {last_error_message}"); traceback.print_exc()
+            if not anime_data_list:
+                raise RuntimeError(last_error_message) # Put 'raise' on its own indented line
+        # --- END CORRECTION ---
 
     if not mal_data_fetched_successfully and not anime_data_list:
          print(f"  [MAL Fetch] Both JSON and HTML methods failed to fetch valid data.")
@@ -125,7 +139,7 @@ def fetch_mal_data(username):
     print(f"  [MAL Fetch] Returning {len(final_list)} unique items after deduplication.")
     return final_list
 
-# --- MODIFIED GROUPING FUNCTION (accepts list of dicts) ---
+# --- GROUPING FUNCTION ---
 def group_anime(anime_data_list):
     """ Groups a list of anime data dictionaries by cleaned titles. """
     grouped = {}
@@ -142,7 +156,7 @@ def group_anime(anime_data_list):
                   grouped[grouped_key]['image_url'] = image_url
     return grouped
 
-# --- WALLHAVEN FUNCTION (Unchanged) ---
+# --- WALLHAVEN FUNCTION ---
 def get_wallpapers(anime_title):
     """ Fetches SFW wallpapers for an anime title from Wallhaven. """
     params = { 'q': anime_title, 'categories': '010', 'purity': '100', 'sorting': 'relevance' }
@@ -176,7 +190,7 @@ def index():
     try: return render_template('index.html')
     except Exception as e: print(f"[Error] Error rendering template index.html: {type(e).__name__} - {e}"); traceback.print_exc(); raise e
 
-# --- MAIN API ENDPOINT (Restored Functionality, Uses New Fetch Method) ---
+# --- MAIN API ENDPOINT ---
 @app.route('/api/wallpapers/<username>')
 def get_anime_wallpapers(username):
     """ API endpoint using combined MAL fetch (JSON + HTML fallback). """
@@ -184,13 +198,13 @@ def get_anime_wallpapers(username):
     if not username: return jsonify({"error": "MAL username is required"}), 400
     try:
         print(f"  [Flow] Fetching MAL list using combined method for: {username}")
-        mal_data_list = fetch_mal_data(username) # Call the combined fetch function
+        mal_data_list = fetch_mal_data(username)
 
         if mal_data_list is not None and not mal_data_list:
              print("  [Result] MAL fetch successful but list is empty.")
              return jsonify({"message": f"No completed anime found for user '{username}'."}), 404
 
-        if mal_data_list is None: # Should not happen if fetch_mal_data raises errors properly
+        if mal_data_list is None: # Failsafe
             print("  [Result] MAL fetch failed via all methods.")
             return jsonify({"error": "Failed to fetch MAL data after multiple attempts."}), 503
 
@@ -203,11 +217,11 @@ def get_anime_wallpapers(username):
 
         results = {}; print(f"  [Flow] Fetching wallpapers (SFW only) from Wallhaven for {len(grouped_anime)} groups...")
         processed_count = 0; total_groups = len(grouped_anime)
-        for key, data in grouped_anime.items(): # Corrected loop from placeholder bug
+        for key, data in grouped_anime.items():
             processed_count += 1
             search_term_for_wallhaven = data['search_term']
             print(f"  [Flow] ({processed_count}/{total_groups}) Processing group: {key} (Searching Wallhaven for: '{search_term_for_wallhaven}')")
-            wallpapers = get_wallpapers(search_term_for_wallhaven) # Use correct variable
+            wallpapers = get_wallpapers(search_term_for_wallhaven)
             if wallpapers:
                  results[key] = { 'display_title': data['display_title'], 'mal_cover': data.get('image_url'), 'wallpapers': wallpapers }
 
@@ -225,7 +239,6 @@ def get_anime_wallpapers(username):
     except Exception as e:
         print(f"[Error] An unhandled error occurred in API endpoint: {type(e).__name__} - {e}")
         traceback.print_exc(); return jsonify({"error": "An unexpected internal server error occurred"}), 500
-# --- END MAIN API ENDPOINT ---
 
 # --- Main Execution ---
 if __name__ == '__main__':
