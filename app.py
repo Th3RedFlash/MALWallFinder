@@ -30,7 +30,7 @@ def clean_anime_title(title):
     text = re.sub(r'\s(part\s?\d+|p\d+)\b', '', text)
     text = re.sub(r'\s(cour\s?\d+)\b', '', text)
     text = re.sub(r'\s?:\s?(the movie|movie|ova|ona|special|tv special)\b', '', text)
-    text = re.sub(r'\s\(\d{4}\)$', '', text) # Remove year in parentheses at end
+    text = re.sub(r'\s\(\d{4}\)$', '', text)
     text = re.sub(r'\s\(tv\)$', '', text)
     text = re.sub(r'\s(2nd season|3rd season|4th season|5th season)', '', text)
     text = re.sub(r'\s[ivx]+$', '', text)
@@ -107,25 +107,9 @@ def fetch_mal_data(username):
                              processed_ids.add(temp_id_placeholder); count += 1
                  print(f"  [MAL Fetch] HTML attempt - Extracted {count} titles via scraping.")
                  if count > 0 or (title_tags is not None): mal_data_fetched_successfully = True
-
-        # --- CORRECTED EXCEPTION BLOCK (Line 112 area) ---
-        except (ValueError, ConnectionError, RuntimeError) as e:
-            last_error_message = f"MAL HTML attempt - Failed: {e}"
-            print(f"  [MAL Fetch] {last_error_message}")
-            # Raise the error only if JSON also failed (anime_data_list is still empty)
-            if not anime_data_list:
-                raise e # Put 'raise e' on its own indented line
-        except requests.exceptions.RequestException as e:
-            last_error_message = f"MAL HTML attempt - Network Error: {e}"
-            print(f"  [MAL Fetch] {last_error_message}")
-            if not anime_data_list:
-                raise ConnectionError(last_error_message) # Put 'raise' on its own indented line
-        except Exception as e:
-            last_error_message = f"MAL HTML attempt - Unexpected error: {e}"
-            print(f"  [MAL Fetch] {last_error_message}"); traceback.print_exc()
-            if not anime_data_list:
-                raise RuntimeError(last_error_message) # Put 'raise' on its own indented line
-        # --- END CORRECTION ---
+        except (ValueError, ConnectionError, RuntimeError) as e: last_error_message = f"MAL HTML attempt - Failed: {e}"; print(f"  [MAL Fetch] {last_error_message}"); if not anime_data_list: raise e
+        except requests.exceptions.RequestException as e: last_error_message = f"MAL HTML attempt - Network Error: {e}"; print(f"  [MAL Fetch] {last_error_message}"); if not anime_data_list: raise ConnectionError(last_error_message)
+        except Exception as e: last_error_message = f"MAL HTML attempt - Unexpected error: {e}"; print(f"  [MAL Fetch] {last_error_message}"); traceback.print_exc(); if not anime_data_list: raise RuntimeError(last_error_message)
 
     if not mal_data_fetched_successfully and not anime_data_list:
          print(f"  [MAL Fetch] Both JSON and HTML methods failed to fetch valid data.")
@@ -135,26 +119,54 @@ def fetch_mal_data(username):
     print(f"  [MAL Fetch] Finished fetch process. Returning {len(anime_data_list)} items.")
     final_list = []; seen_titles = set()
     for item in anime_data_list:
-        if item['title'] not in seen_titles: final_list.append(item); seen_titles.add(item['title'])
+        # Ensure item has a title before adding
+        item_title = item.get('title')
+        if item_title and item_title not in seen_titles:
+            final_list.append(item)
+            seen_titles.add(item_title)
     print(f"  [MAL Fetch] Returning {len(final_list)} unique items after deduplication.")
     return final_list
 
-# --- GROUPING FUNCTION ---
+# --- GROUPING FUNCTION (Corrected UnboundLocalError) ---
 def group_anime(anime_data_list):
     """ Groups a list of anime data dictionaries by cleaned titles. """
     grouped = {}
+    print(f"  [GroupAnime] Starting grouping for {len(anime_data_list)} items.") # Log start
     for item_data in anime_data_list:
-        title = item_data.get('title'); image_url = item_data.get('image_url')
-        if not title: continue; display_title = title; search_term = title
+        title = item_data.get('title')
+
+        # Check for valid title early in the loop iteration
+        if not title:
+            print(f"  [GroupAnime] Skipping item with missing title: {item_data}")
+            continue # Skip this item entirely if it has no title
+
+        # Only assign other variables if title is valid
+        image_url = item_data.get('image_url') # Will likely be None
+        display_title = title # Assign display_title here
+        search_term = title # Assign search_term here
+
         grouped_key = clean_anime_title(title)
-        if not grouped_key: continue
+        if not grouped_key:
+            print(f"  [GroupAnime] Skipping item '{title}' because cleaned key is empty.")
+            continue # Skip if cleaning results in nothing
+
+        # Now we know display_title, search_term, image_url, and grouped_key are valid (or None for image_url)
         if grouped_key not in grouped:
-            grouped[grouped_key] = { 'display_title': display_title, 'search_term': search_term, 'image_url': image_url }
+            grouped[grouped_key] = {
+                'display_title': display_title,
+                'search_term': search_term,
+                'image_url': image_url
+            }
         else:
+             # Logic to prefer shorter display title for a group
              if len(display_title) < len(grouped[grouped_key]['display_title']):
                   grouped[grouped_key]['display_title'] = display_title
-                  grouped[grouped_key]['image_url'] = image_url
+                  # Optionally update search term or image url here if needed,
+                  # but current logic keeps the first image_url encountered for simplicity.
+                  # grouped[grouped_key]['image_url'] = image_url # Example if you wanted to update
+    print(f"  [GroupAnime] Finished grouping. Result has {len(grouped)} groups.") # Log end
     return grouped
+# --- END GROUPING FUNCTION CORRECTION ---
 
 # --- WALLHAVEN FUNCTION ---
 def get_wallpapers(anime_title):
@@ -203,13 +215,12 @@ def get_anime_wallpapers(username):
         if mal_data_list is not None and not mal_data_list:
              print("  [Result] MAL fetch successful but list is empty.")
              return jsonify({"message": f"No completed anime found for user '{username}'."}), 404
-
         if mal_data_list is None: # Failsafe
             print("  [Result] MAL fetch failed via all methods.")
             return jsonify({"error": "Failed to fetch MAL data after multiple attempts."}), 503
 
         print(f"  [Flow] Found {len(mal_data_list)} MAL entries. Grouping...")
-        grouped_anime = group_anime(mal_data_list)
+        grouped_anime = group_anime(mal_data_list) # Call the corrected group_anime
         print(f"  [Flow] Grouped into {len(grouped_anime)} unique series.")
         if not grouped_anime:
              print("  [Result] No anime could be grouped from fetched data.")
